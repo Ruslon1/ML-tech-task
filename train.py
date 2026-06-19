@@ -131,7 +131,6 @@ def train():
             model=model,
             train_dataset=dataset,
             args=training_args,
-            tokenizer=tokenizer,
             data_collator=DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False),
         )
 
