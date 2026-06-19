@@ -5,7 +5,7 @@ import pandas as pd
 import torch
 from datasets import load_dataset
 from peft import PeftModel
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 
 
 def load_model(model_name, adapter_path=None):
@@ -13,10 +13,17 @@ def load_model(model_name, adapter_path=None):
     tokenizer.pad_token = tokenizer.eos_token
     tokenizer.padding_side = "right"
 
+    bnb_config = BitsAndBytesConfig(
+        load_in_4bit=True,
+        bnb_4bit_quant_type="nf4",
+        bnb_4bit_use_double_quant=True,
+        bnb_4bit_compute_dtype=torch.float16,
+    )
+
     model = AutoModelForCausalLM.from_pretrained(
         model_name,
+        quantization_config=bnb_config,
         device_map="auto",
-        torch_dtype=torch.float16,
     )
 
     if adapter_path is not None:
@@ -42,6 +49,19 @@ def generate_response(tokenizer, model, instruction):
     return decoded.split("[/INST]", 1)[-1].strip()
 
 
+def generate_predictions(dataset, model_name, adapter_path=None):
+    tokenizer, model = load_model(model_name, adapter_path)
+    predictions = []
+
+    for example in dataset:
+        predictions.append(generate_response(tokenizer, model, example["instruction"]))
+
+    del model
+    torch.cuda.empty_cache()
+
+    return predictions
+
+
 def main():
     model_name = "mistralai/Mistral-7B-Instruct-v0.2"
     adapter_path = Path("outputs/mistral-lora/adapter")
@@ -49,34 +69,10 @@ def main():
     output_path = Path("outputs/eval_results.csv")
 
     dataset = load_dataset("json", data_files=str(evaluation_path), split="train")
+    references = [example["response"] for example in dataset]
 
-    base_tokenizer, base_model = load_model(model_name)
-    tuned_tokenizer, tuned_model = load_model(model_name, adapter_path)
-
-    rows = []
-    references = []
-    base_predictions = []
-    tuned_predictions = []
-
-    for example in dataset:
-        instruction = example["instruction"]
-        reference = example["response"]
-
-        base_response = generate_response(base_tokenizer, base_model, instruction)
-        tuned_response = generate_response(tuned_tokenizer, tuned_model, instruction)
-
-        references.append(reference)
-        base_predictions.append(base_response)
-        tuned_predictions.append(tuned_response)
-
-        rows.append(
-            {
-                "instruction": instruction,
-                "reference_response": reference,
-                "base_response": base_response,
-                "tuned_response": tuned_response,
-            }
-        )
+    base_predictions = generate_predictions(dataset, model_name)
+    tuned_predictions = generate_predictions(dataset, model_name, adapter_path)
 
     rouge = evaluate.load("rouge")
     bertscore = evaluate.load("bertscore")
@@ -95,14 +91,22 @@ def main():
         lang="en",
     )
 
-    results_df = pd.DataFrame(rows)
-    results_df["base_bertscore_f1"] = base_bertscore["f1"]
-    results_df["tuned_bertscore_f1"] = tuned_bertscore["f1"]
+    rows = []
+    for i, example in enumerate(dataset):
+        rows.append(
+            {
+                "instruction": example["instruction"],
+                "reference_response": example["response"],
+                "base_response": base_predictions[i],
+                "tuned_response": tuned_predictions[i],
+                "base_bertscore_f1": base_bertscore["f1"][i],
+                "tuned_bertscore_f1": tuned_bertscore["f1"][i],
+            }
+        )
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    results_df.to_csv(output_path, index=False)
+    pd.DataFrame(rows).to_csv(output_path, index=False)
 
-    print(f"Saved to {output_path}")
 
 
 if __name__ == "__main__":
