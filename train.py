@@ -7,9 +7,10 @@ from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
     BitsAndBytesConfig,
+    DataCollatorForLanguageModeling,
+    Trainer,
     TrainingArguments,
 )
-from trl import SFTTrainer
 
 from tracking import log_artifacts, log_metrics, log_params, start_run
 
@@ -25,7 +26,7 @@ def load_dataset_for_training(dataset_path):
     return dataset
 
 
-def tokenize(model_name):
+def tokenize(model_name, dataset):
     bnb_config = BitsAndBytesConfig(
         load_in_4bit=True,
         bnb_4bit_quant_type="nf4",
@@ -43,7 +44,18 @@ def tokenize(model_name):
         device_map="auto",
     )
 
-    return tokenizer, model
+    def tokenize_example(example):
+        tokens = tokenizer(
+            example["text"],
+            truncation=True,
+            max_length=512,
+        )
+        tokens["labels"] = tokens["input_ids"].copy()
+        return tokens
+
+    dataset = dataset.map(tokenize_example, remove_columns=dataset.column_names)
+
+    return tokenizer, model, dataset
 
 
 def apply_qlora(model):
@@ -77,7 +89,7 @@ def train():
     output_dir = Path("outputs/mistral-lora")
     adapter_dir = output_dir / "adapter"
     dataset = load_dataset_for_training(dataset_path)
-    tokenizer, model = tokenize(model_name)
+    tokenizer, model, dataset = tokenize(model_name, dataset)
     model, peft_config = apply_qlora(model)
 
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -92,6 +104,7 @@ def train():
                 "gradient_accumulation_steps": 8,
                 "learning_rate": 2e-4,
                 "max_seq_length": 512,
+                "warmup_steps": 20,
                 "lora_r": peft_config.r,
                 "lora_alpha": peft_config.lora_alpha,
                 "lora_dropout": peft_config.lora_dropout,
@@ -107,20 +120,19 @@ def train():
             logging_steps=10,
             save_strategy="epoch",
             optim="paged_adamw_8bit",
-            warmup_ratio=0.03,
+            warmup_steps=20,
             lr_scheduler_type="cosine",
             fp16=True,
             bf16=False,
             report_to="none",
         )
 
-        trainer = SFTTrainer(
+        trainer = Trainer(
             model=model,
             train_dataset=dataset,
             args=training_args,
-            processing_class=tokenizer,
-            dataset_text_field="text",
-            max_seq_length=512,
+            tokenizer=tokenizer,
+            data_collator=DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False),
         )
 
         trainer.train()
