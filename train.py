@@ -2,6 +2,7 @@ from pathlib import Path
 
 import torch
 from datasets import load_dataset
+from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 
 
@@ -37,12 +38,38 @@ def tokenize(model_name):
     return tokenizer, model
 
 
+def apply_qlora(model):
+    model.config.use_cache = False
+    model = prepare_model_for_kbit_training(model)
+
+    peft_config = LoraConfig(
+        r=16,
+        lora_alpha=32,
+        lora_dropout=0.05,
+        bias="none",
+        task_type="CAUSAL_LM",
+        target_modules=[
+            "q_proj",
+            "k_proj",
+            "v_proj",
+            "o_proj",
+            "gate_proj",
+            "up_proj",
+            "down_proj",
+        ],
+    )
+
+    model = get_peft_model(model, peft_config)
+    return model, peft_config
+
+
 def train():
     model_name = "mistralai/Mistral-7B-Instruct-v0.2"
     dataset_path = Path("data/dataset.jsonl")
 
     dataset = load_dataset_for_training(dataset_path)
     tokenizer, model = tokenize(model_name)
+    model, peft_config = apply_qlora(model)
 
 if __name__ == "__main__":
     train()
