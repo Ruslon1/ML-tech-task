@@ -99,7 +99,7 @@ def train():
             {
                 "model_name": model_name,
                 "train_samples": len(dataset),
-                "num_train_epochs": 3,
+                "num_train_epochs": 2,
                 "per_device_train_batch_size": 1,
                 "gradient_accumulation_steps": 8,
                 "learning_rate": 2e-4,
@@ -113,7 +113,7 @@ def train():
 
         training_args = TrainingArguments(
             output_dir=str(output_dir),
-            num_train_epochs=3,
+            num_train_epochs=2,
             per_device_train_batch_size=1,
             gradient_accumulation_steps=8,
             learning_rate=2e-4,
