@@ -48,7 +48,7 @@ def tokenize(model_name, dataset):
         tokens = tokenizer(
             example["text"],
             truncation=True,
-            max_length=512,
+            max_length=256,
         )
         tokens["labels"] = tokens["input_ids"].copy()
         return tokens
@@ -103,7 +103,7 @@ def train():
                 "per_device_train_batch_size": 1,
                 "gradient_accumulation_steps": 8,
                 "learning_rate": 2e-4,
-                "max_seq_length": 512,
+                "max_seq_length": 256,
                 "warmup_steps": 20,
                 "lora_r": peft_config.r,
                 "lora_alpha": peft_config.lora_alpha,
