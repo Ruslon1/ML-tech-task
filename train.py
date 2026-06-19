@@ -7,24 +7,26 @@ from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
     BitsAndBytesConfig,
+    DataCollatorForLanguageModeling,
+    Trainer,
     TrainingArguments,
 )
-from trl import SFTTrainer
 
 from tracking import log_artifacts, log_metrics, log_params, start_run
 
 
 def format_example(example):
-    return f"<s>[INST] {example['instruction']} [/INST] {example['response']}</s>"
+    text = f"<s>[INST] {example['instruction']} [/INST] {example['response']}</s>"
+    return {"text": text}
 
 
 def load_dataset_for_training(dataset_path):
     dataset = load_dataset("json", data_files=str(dataset_path), split="train")
-    dataset = dataset.map(lambda x: {"text": format_example(x)})
+    dataset = dataset.map(format_example)
     return dataset
 
 
-def load_model(model_name):
+def tokenize(model_name, dataset):
     bnb_config = BitsAndBytesConfig(
         load_in_4bit=True,
         bnb_4bit_quant_type="nf4",
@@ -42,13 +44,24 @@ def load_model(model_name):
         device_map="auto",
     )
 
-    model.config.use_cache = False
-    model = prepare_model_for_kbit_training(model)
+    def tokenize_example(example):
+        tokens = tokenizer(
+            example["text"],
+            truncation=True,
+            max_length=256,
+        )
+        tokens["labels"] = tokens["input_ids"].copy()
+        return tokens
 
-    return tokenizer, model
+    dataset = dataset.map(tokenize_example, remove_columns=dataset.column_names)
+
+    return tokenizer, model, dataset
 
 
 def apply_qlora(model):
+    model.config.use_cache = False
+    model = prepare_model_for_kbit_training(model)
+
     peft_config = LoraConfig(
         r=16,
         lora_alpha=32,
@@ -66,7 +79,8 @@ def apply_qlora(model):
         ],
     )
 
-    return get_peft_model(model, peft_config), peft_config
+    model = get_peft_model(model, peft_config)
+    return model, peft_config
 
 
 def train():
@@ -74,33 +88,33 @@ def train():
     dataset_path = Path("data/dataset.jsonl")
     output_dir = Path("outputs/mistral-lora")
     adapter_dir = output_dir / "adapter"
-
     dataset = load_dataset_for_training(dataset_path)
-    tokenizer, model = load_model(model_name)
+    tokenizer, model, dataset = tokenize(model_name, dataset)
     model, peft_config = apply_qlora(model)
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
     with start_run("mistral-qlora"):
-
         log_params(
             {
                 "model_name": model_name,
                 "train_samples": len(dataset),
                 "num_train_epochs": 2,
-                "batch_size": 1,
-                "grad_accum": 8,
-                "lr": 2e-4,
+                "per_device_train_batch_size": 2,
+                "gradient_accumulation_steps": 8,
+                "learning_rate": 2e-4,
                 "max_seq_length": 256,
+                "warmup_steps": 20,
                 "lora_r": peft_config.r,
                 "lora_alpha": peft_config.lora_alpha,
+                "lora_dropout": peft_config.lora_dropout,
             }
         )
 
         training_args = TrainingArguments(
             output_dir=str(output_dir),
             num_train_epochs=2,
-            per_device_train_batch_size=1,
+            per_device_train_batch_size=2,
             gradient_accumulation_steps=8,
             learning_rate=2e-4,
             logging_steps=10,
@@ -113,16 +127,13 @@ def train():
             report_to="none",
         )
 
-        trainer = SFTTrainer(
+        trainer = Trainer(
             model=model,
-            args=training_args,
             train_dataset=dataset,
-            processing_class=tokenizer,
-            formatting_func=lambda x: x["text"],
-            max_seq_length=256,
-            packing=True,
+            args=training_args,
+            data_collator=DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False),
         )
-        
+
         trainer.train()
 
         trainer.model.save_pretrained(adapter_dir)
@@ -130,7 +141,6 @@ def train():
 
         log_metrics(trainer)
         log_artifacts(output_dir)
-
 
 if __name__ == "__main__":
     train()
