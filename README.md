@@ -119,7 +119,7 @@
 
 График training loss:
 
-![Training Loss](/Users/ruslan/Projects/ML%20tech%20task/loss.png)
+![Training Loss](/loss.png)
 
 ## Шаг 3. Оценка
 
