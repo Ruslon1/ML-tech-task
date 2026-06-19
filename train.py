@@ -47,6 +47,7 @@ def tokenize(model_name, dataset):
     def tokenize_example(example):
         tokens = tokenizer(
             example["text"],
+            padding="max_length",
             truncation=True,
             max_length=256,
         )
