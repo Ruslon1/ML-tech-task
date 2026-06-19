@@ -115,13 +115,14 @@ def train():
 
         trainer = SFTTrainer(
             model=model,
+            args=training_args,
             train_dataset=dataset,
-            dataset_text_field="text",
+            processing_class=tokenizer,
+            formatting_func=lambda x: x["text"],
             max_seq_length=256,
             packing=True,
-            args=training_args,
         )
-
+        
         trainer.train()
 
         trainer.model.save_pretrained(adapter_dir)
