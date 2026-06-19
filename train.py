@@ -7,26 +7,24 @@ from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
     BitsAndBytesConfig,
-    DataCollatorForLanguageModeling,
-    Trainer,
     TrainingArguments,
 )
+from trl import SFTTrainer
 
 from tracking import log_artifacts, log_metrics, log_params, start_run
 
 
 def format_example(example):
-    text = f"<s>[INST] {example['instruction']} [/INST] {example['response']}</s>"
-    return {"text": text}
+    return f"<s>[INST] {example['instruction']} [/INST] {example['response']}</s>"
 
 
 def load_dataset_for_training(dataset_path):
     dataset = load_dataset("json", data_files=str(dataset_path), split="train")
-    dataset = dataset.map(format_example)
+    dataset = dataset.map(lambda x: {"text": format_example(x)})
     return dataset
 
 
-def tokenize(model_name, dataset):
+def load_model(model_name):
     bnb_config = BitsAndBytesConfig(
         load_in_4bit=True,
         bnb_4bit_quant_type="nf4",
@@ -44,24 +42,13 @@ def tokenize(model_name, dataset):
         device_map="auto",
     )
 
-    def tokenize_example(example):
-        tokens = tokenizer(
-            example["text"],
-            truncation=True,
-            max_length=256,
-        )
-        tokens["labels"] = tokens["input_ids"].copy()
-        return tokens
-
-    dataset = dataset.map(tokenize_example, remove_columns=dataset.column_names)
-
-    return tokenizer, model, dataset
-
-
-def apply_qlora(model):
     model.config.use_cache = False
     model = prepare_model_for_kbit_training(model)
 
+    return tokenizer, model
+
+
+def apply_qlora(model):
     peft_config = LoraConfig(
         r=16,
         lora_alpha=32,
@@ -79,8 +66,7 @@ def apply_qlora(model):
         ],
     )
 
-    model = get_peft_model(model, peft_config)
-    return model, peft_config
+    return get_peft_model(model, peft_config), peft_config
 
 
 def train():
@@ -88,26 +74,26 @@ def train():
     dataset_path = Path("data/dataset.jsonl")
     output_dir = Path("outputs/mistral-lora")
     adapter_dir = output_dir / "adapter"
+
     dataset = load_dataset_for_training(dataset_path)
-    tokenizer, model, dataset = tokenize(model_name, dataset)
+    tokenizer, model = load_model(model_name)
     model, peft_config = apply_qlora(model)
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
     with start_run("mistral-qlora"):
+
         log_params(
             {
                 "model_name": model_name,
                 "train_samples": len(dataset),
                 "num_train_epochs": 2,
-                "per_device_train_batch_size": 1,
-                "gradient_accumulation_steps": 8,
-                "learning_rate": 2e-4,
+                "batch_size": 1,
+                "grad_accum": 8,
+                "lr": 2e-4,
                 "max_seq_length": 256,
-                "warmup_steps": 20,
                 "lora_r": peft_config.r,
                 "lora_alpha": peft_config.lora_alpha,
-                "lora_dropout": peft_config.lora_dropout,
             }
         )
 
@@ -127,11 +113,14 @@ def train():
             report_to="none",
         )
 
-        trainer = Trainer(
+        trainer = SFTTrainer(
             model=model,
+            tokenizer=tokenizer,
             train_dataset=dataset,
+            dataset_text_field="text",
+            max_seq_length=256,
+            packing=True,
             args=training_args,
-            data_collator=DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False),
         )
 
         trainer.train()
@@ -141,6 +130,7 @@ def train():
 
         log_metrics(trainer)
         log_artifacts(output_dir)
+
 
 if __name__ == "__main__":
     train()
