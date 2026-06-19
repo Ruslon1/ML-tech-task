@@ -3,7 +3,15 @@ from pathlib import Path
 import torch
 from datasets import load_dataset
 from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
-from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+from transformers import (
+    AutoModelForCausalLM,
+    AutoTokenizer,
+    BitsAndBytesConfig,
+    TrainingArguments,
+)
+from trl import SFTTrainer
+
+from tracking import log_artifacts, log_metrics, log_params, start_run
 
 
 def format_example(example):
@@ -66,10 +74,62 @@ def apply_qlora(model):
 def train():
     model_name = "mistralai/Mistral-7B-Instruct-v0.2"
     dataset_path = Path("data/dataset.jsonl")
-
+    output_dir = Path("outputs/mistral-lora")
+    adapter_dir = output_dir / "adapter"
     dataset = load_dataset_for_training(dataset_path)
     tokenizer, model = tokenize(model_name)
     model, peft_config = apply_qlora(model)
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    with start_run("mistral-qlora"):
+        log_params(
+            {
+                "model_name": model_name,
+                "train_samples": len(dataset),
+                "num_train_epochs": 3,
+                "per_device_train_batch_size": 1,
+                "gradient_accumulation_steps": 8,
+                "learning_rate": 2e-4,
+                "max_seq_length": 512,
+                "lora_r": peft_config.r,
+                "lora_alpha": peft_config.lora_alpha,
+                "lora_dropout": peft_config.lora_dropout,
+            }
+        )
+
+        training_args = TrainingArguments(
+            output_dir=str(output_dir),
+            num_train_epochs=3,
+            per_device_train_batch_size=1,
+            gradient_accumulation_steps=8,
+            learning_rate=2e-4,
+            logging_steps=10,
+            save_strategy="epoch",
+            optim="paged_adamw_8bit",
+            warmup_ratio=0.03,
+            lr_scheduler_type="cosine",
+            fp16=True,
+            bf16=False,
+            report_to="none",
+        )
+
+        trainer = SFTTrainer(
+            model=model,
+            train_dataset=dataset,
+            args=training_args,
+            processing_class=tokenizer,
+            dataset_text_field="text",
+            max_seq_length=512,
+        )
+
+        trainer.train()
+
+        trainer.model.save_pretrained(adapter_dir)
+        tokenizer.save_pretrained(adapter_dir)
+
+        log_metrics(trainer)
+        log_artifacts(output_dir)
 
 if __name__ == "__main__":
     train()
