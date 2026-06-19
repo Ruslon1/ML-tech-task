@@ -52,7 +52,7 @@ def generate_response(tokenizer, model, instruction):
 def generate_predictions(dataset, model_name, adapter_path=None):
     tokenizer, model = load_model(model_name, adapter_path)
     predictions = []
-
+    print()
     for example in dataset:
         predictions.append(generate_response(tokenizer, model, example["instruction"]))
 
