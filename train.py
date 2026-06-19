@@ -10,13 +10,13 @@ def format_example(example):
     return {"text": text}
 
 
-def main():
-    model_name = "mistralai/Mistral-7B-Instruct-v0.2"
-    dataset_path = Path("data/dataset.jsonl")
-
+def load_dataset_for_training(dataset_path):
     dataset = load_dataset("json", data_files=str(dataset_path), split="train")
     dataset = dataset.map(format_example)
+    return dataset
 
+
+def tokenize(model_name):
     bnb_config = BitsAndBytesConfig(
         load_in_4bit=True,
         bnb_4bit_quant_type="nf4",
@@ -34,5 +34,15 @@ def main():
         device_map="auto",
     )
 
+    return tokenizer, model
+
+
+def train():
+    model_name = "mistralai/Mistral-7B-Instruct-v0.2"
+    dataset_path = Path("data/dataset.jsonl")
+
+    dataset = load_dataset_for_training(dataset_path)
+    tokenizer, model = tokenize(model_name)
+
 if __name__ == "__main__":
-    main()
+    train()
