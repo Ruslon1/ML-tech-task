@@ -7,3 +7,5 @@ accelerate
 bitsandbytes
 pandas
 mlflow
+evaluate
+bert-score
